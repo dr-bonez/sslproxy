@@ -1,0 +1,8 @@
+[Unit]
+Description=An easy ssl proxy that lazily obtains LetsEncrypt certs with SNI virtual hosting
+
+[Service]
+ExecStart=/usr/bin/sslproxy
+
+[Install]
+WantedBy=multi-user.target
