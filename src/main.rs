@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ const CERTS_PATH: &str = concat!("/var/lib/", env!("CARGO_CRATE_NAME"), "/certs/
 struct Config {
     #[serde(default)]
     testing: bool,
-    bind: IpAddr,
+    bind: SocketAddr,
     contact: Vec<String>,
     bindings: BTreeMap<String, String>,
 }

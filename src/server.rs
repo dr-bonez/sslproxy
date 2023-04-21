@@ -55,7 +55,7 @@ pub(crate) async fn serve(config: Arc<Config>) -> Result<JoinHandle<()>, Error> 
         String,
         watch::Receiver<Option<Arc<CertifiedKey>>>,
     >::new()));
-    let listener = TcpListener::bind((config.bind, 443)).await?;
+    let listener = TcpListener::bind(config.bind).await?;
     let server = tokio::spawn(async move {
         loop {
             match listener.accept().await {
