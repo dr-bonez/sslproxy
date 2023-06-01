@@ -3,6 +3,7 @@ Description=An easy ssl proxy that lazily obtains LetsEncrypt certs with SNI vir
 
 [Service]
 ExecStart=/usr/bin/sslproxy
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

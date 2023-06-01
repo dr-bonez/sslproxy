@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_acme::acme::ACME_TLS_ALPN_NAME;
 use color_eyre::eyre::eyre;
@@ -59,7 +61,11 @@ pub(crate) async fn serve(config: Arc<Config>) -> Result<JoinHandle<()>, Error> 
     let server = tokio::spawn(async move {
         loop {
             match listener.accept().await {
-                Ok((mut stream, _)) => {
+                Ok((stream, _)) => {
+                    let mut stream = Box::pin(tokio_io_timeout::TimeoutStream::new(stream));
+                    stream
+                        .as_mut()
+                        .set_read_timeout_pinned(Some(Duration::from_secs(300)));
                     let config = config.clone();
                     let acme_tls_alpn_cache = acme_tls_alpn_cache.clone();
                     let resolver = resolver.clone();
@@ -154,13 +160,17 @@ pub(crate) async fn serve(config: Arc<Config>) -> Result<JoinHandle<()>, Error> 
                                             .next()
                                             .ok_or_else(|| eyre!("NXDOMAIN for {binding}"))?
                                     };
-                                    let mut tcp =
+                                    let tcp =
                                         TcpStream::connect((resolved, binding.port_u16().unwrap()))
                                             .await?;
-                                    match binding.scheme().unwrap().as_str() {
+                                    let mut tcp =
+                                        Box::pin(tokio_io_timeout::TimeoutStream::new(tcp));
+                                    tcp.as_mut()
+                                        .set_read_timeout_pinned(Some(Duration::from_secs(300)));
+                                    let tcp_res = match binding.scheme().unwrap().as_str() {
                                         "tcp" => {
                                             tokio::io::copy_bidirectional(&mut stream, &mut tcp)
-                                                .await?;
+                                                .await
                                         }
                                         "ssl" | "tls" => {
                                             tokio::io::copy_bidirectional(
@@ -169,10 +179,17 @@ pub(crate) async fn serve(config: Arc<Config>) -> Result<JoinHandle<()>, Error> 
                                                     .connect(host.try_into()?, tcp)
                                                     .await?,
                                             )
-                                            .await?;
+                                            .await
                                         }
                                         _ => unreachable!("config is prevalidated"),
-                                    }
+                                    };
+                                    match tcp_res {
+                                        Ok(_) => Ok(()),
+                                        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                                            Ok(())
+                                        }
+                                        Err(e) => Err(e),
+                                    }?;
                                 }
 
                                 Ok::<_, Error>(())
