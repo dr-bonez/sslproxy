@@ -18,11 +18,11 @@ http = "0.2.9"
 hyper = { version = "0.14.26", features = ["server"] }
 openssl-sys = { version = "0.9.85", features = ["vendored"] }
 pem = "2"
+pin-project = "1.1.0"
 rustls = "0.21.0"
 rustls-native-certs = "0.6.2"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-tokio-io-timeout = "1.2.0"
 tokio-rustls = "0.24.0"
 tokio-stream = { version = "0.1.12", features = ["sync"] }
 toml = "0.7.3"

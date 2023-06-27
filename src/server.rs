@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::Instant;
 
 use async_acme::acme::ACME_TLS_ALPN_NAME;
 use color_eyre::eyre::eyre;
@@ -16,11 +18,14 @@ use rustls::Certificate;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::ServerConfig;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio::time::Sleep;
 use tokio_rustls::LazyConfigAcceptor;
 use tokio_rustls::TlsConnector;
 use tokio_stream::wrappers::WatchStream;
@@ -33,6 +38,98 @@ struct SingleCertResolver(Arc<CertifiedKey>);
 impl ResolvesServerCert for SingleCertResolver {
     fn resolve(&self, _: rustls::server::ClientHello) -> Option<Arc<CertifiedKey>> {
         Some(self.0.clone())
+    }
+}
+
+#[pin_project::pin_project]
+pub struct TimeoutStream<S: AsyncRead + AsyncWrite = TcpStream> {
+    timeout: Duration,
+    #[pin]
+    sleep: Sleep,
+    #[pin]
+    stream: S,
+}
+impl<S: AsyncRead + AsyncWrite> TimeoutStream<S> {
+    pub fn new(stream: S, timeout: Duration) -> Self {
+        Self {
+            timeout,
+            sleep: tokio::time::sleep(timeout),
+            stream,
+        }
+    }
+}
+impl<S: AsyncRead + AsyncWrite> AsyncRead for TimeoutStream<S> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let mut this = self.project();
+        if let std::task::Poll::Ready(_) = this.sleep.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out",
+            )));
+        }
+        let res = this.stream.poll_read(cx, buf);
+        if res.is_ready() {
+            this.sleep.reset(Instant::now() + *this.timeout);
+        }
+        res
+    }
+}
+impl<S: AsyncRead + AsyncWrite> AsyncWrite for TimeoutStream<S> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        let mut this = self.project();
+        if let std::task::Poll::Ready(_) = this.sleep.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out",
+            )));
+        }
+        let res = this.stream.poll_write(cx, buf);
+        if res.is_ready() {
+            this.sleep.reset(Instant::now() + *this.timeout);
+        }
+        res
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let mut this = self.project();
+        if let std::task::Poll::Ready(_) = this.sleep.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out",
+            )));
+        }
+        let res = this.stream.poll_flush(cx);
+        if res.is_ready() {
+            this.sleep.reset(Instant::now() + *this.timeout);
+        }
+        res
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let mut this = self.project();
+        if let std::task::Poll::Ready(_) = this.sleep.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out",
+            )));
+        }
+        let res = this.stream.poll_shutdown(cx);
+        if res.is_ready() {
+            this.sleep.reset(Instant::now() + *this.timeout);
+        }
+        res
     }
 }
 
@@ -62,10 +159,7 @@ pub(crate) async fn serve(config: Arc<Config>) -> Result<JoinHandle<()>, Error> 
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    let mut stream = Box::pin(tokio_io_timeout::TimeoutStream::new(stream));
-                    stream
-                        .as_mut()
-                        .set_read_timeout_pinned(Some(Duration::from_secs(300)));
+                    let mut stream = Box::pin(TimeoutStream::new(stream, Duration::from_secs(300)));
                     let config = config.clone();
                     let acme_tls_alpn_cache = acme_tls_alpn_cache.clone();
                     let resolver = resolver.clone();
@@ -164,9 +258,7 @@ pub(crate) async fn serve(config: Arc<Config>) -> Result<JoinHandle<()>, Error> 
                                         TcpStream::connect((resolved, binding.port_u16().unwrap()))
                                             .await?;
                                     let mut tcp =
-                                        Box::pin(tokio_io_timeout::TimeoutStream::new(tcp));
-                                    tcp.as_mut()
-                                        .set_read_timeout_pinned(Some(Duration::from_secs(300)));
+                                        Box::pin(TimeoutStream::new(tcp, Duration::from_secs(300)));
                                     let tcp_res = match binding.scheme().unwrap().as_str() {
                                         "tcp" => {
                                             tokio::io::copy_bidirectional(&mut stream, &mut tcp)
